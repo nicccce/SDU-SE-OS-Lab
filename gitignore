@@ -1,0 +1,54 @@
+# 编译生成文件和目录
+*.exe
+*.out
+*.a
+*.so
+*.dll
+*.lib
+*.dylib
+*.o
+*.obj
+*.s
+*.i
+
+# 调试文件
+*.ilk
+*.pdb
+*.idb
+*.pch
+
+# 日志和临时文件
+*.log
+*.tmp
+*.swp
+*~
+*.bak
+
+# 构建目录
+build/
+bin/
+obj/
+Debug/
+Release/
+x64/
+x86/
+.vs/
+.vscode/*
+
+# CMake 生成文件
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+*.cmake
+
+# 依赖目录（如 Conan、vcpkg）
+deps/
+conanbuildinfo.cmake
+conaninfo.txt
+
+# 其他工具生成文件
+*.suo
+*.user
+*.ncb
+*.sdf
