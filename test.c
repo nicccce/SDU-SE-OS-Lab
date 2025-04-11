@@ -1,11 +1,15 @@
-#include <unistd.h>  
+#include <stdio.h>
+#include <unistd.h>
+#include <signal.h>
 
-int main() {  
-    pid_t pid = fork();  
-    if (pid == 0) {  
-        printf("Child PID: %d\n", getpid());  // 子进程  
-    } else {  
-        printf("Parent PID: %d\n", getpid()); // 父进程  
-    }
+void handler(int sig) {
+    printf("Caught signal %d\n", sig);
+}
+
+int main() {
+    signal(SIGINT, handler); 
+    printf("Pausing... (Press Ctrl+C to interrupt)\n");
+    pause();
+    printf("pause() returned (errno = EINTR)\n");
     return 0;
-}  
+}

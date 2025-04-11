@@ -1,10 +1,16 @@
 # 操作系统算法实验笔记
 
+
+
 ## 实验一：进程控制
 
-------
+---
+
+
 
 ### 核心概念与系统调用
+
+---
 
 #### 1. 进程创建与执行
 
@@ -138,6 +144,8 @@
 
   - **`kill(pid, sig)`**：向指定进程发送信号。
 
+    - 可以通过 `kill -l`查看系统当前的信号集合
+  
     ```cpp
     #include <signal.h>  
     int main() {  
@@ -151,16 +159,31 @@
     }  
     ```
 
+    
+  
   - **`pause()`**：挂起进程，直到收到信号。
-
+  
+    - `pause()` **总是返回 `-1`**，并设置 `errno = EINTR`（表示被信号中断）。
+  
     ```c++
-    #include <unistd.h>  
-    int main() {  
-        printf("PID=%d paused. Try: kill -SIGCONT %d\n", getpid(), getpid());  
-        pause();  // 挂起直到任意信号到达  
-        printf("Resumed by signal\n");  
-    }  
+    #include <stdio.h>
+    #include <unistd.h>
+    #include <signal.h>
+    
+    void handler(int sig) {
+        printf("Caught signal %d\n", sig);
+    }
+    
+    int main() {
+        signal(SIGINT, handler); 
+        printf("Pausing... (Press Ctrl+C to interrupt)\n");
+        pause();
+        printf("pause() returned (errno = EINTR)\n");
+        return 0;
+    }
     ```
+  
+    
 
   - **`signal(sig, handler)`**：注册信号处理函数（如自定义的 `sigcat`）。
 
@@ -178,9 +201,11 @@
         */
     }  
     ```
-
+  
+    
+  
   - **`sleep()`**：使进程休眠指定秒数
-
+  
     ```c
     #include <unistd.h>
     int main() {
@@ -189,9 +214,11 @@
         printf("Awake!\n");
     }
     ```
-
+  
+    
+  
   - **`alarm()`**：设置定时器信号
-
+  
     ```c
     #include <unistd.h>
     #include <signal.h>
@@ -204,74 +231,282 @@
         pause();
     }
     ```
-
   
+  
+
+### **示例实验解析**
+
+---
+
+
+
+#### **代码结构分析**
+
+**1. 头文件 `pctl.h`**
+
+```c
+#include <sys/types.h> 
+#include <wait.h> 
+#include <unistd.h> 
+#include <signal.h> 
+#include <stdio.h> 
+#include <stdlib.h> 
+
+// 自定义信号处理函数类型（兼容性定义）
+typedef void (*sighandler_t) (int); 
+
+// SIGINT 信号处理函数
+void sigcat() { 
+    printf("%d Process continue\n", getpid());  // 打印进程继续信息
+}
+```
+• **作用**：定义信号处理函数 `sigcat`，当进程收到 `SIGINT`（如 `Ctrl+C`）时，打印进程继续信息。
+
+
+
+**2. 主程序 `pctl.c`**（核心逻辑）
+
+```c
+#include "pctl.h" 
+
+int main(int argc, char *argv[]) { 
+    int i; 
+    int pid;          // 子进程 PID
+    int status;       // 子进程退出状态
+    char *args[] = {"/bin/ls", "-a", NULL};  // 子进程默认执行的命令
+
+    // 注册 SIGINT 信号处理函数
+    signal(SIGINT, (sighandler_t)sigcat); 
+
+    // 创建子进程
+    pid = fork(); 
+
+    // 处理 fork 失败
+    if (pid < 0) { 
+        printf("Create Process fail!\n"); 
+        exit(EXIT_FAILURE); 
+    } 
+
+    // 子进程逻辑
+    if (pid == 0) { 
+        // 打印父子进程信息
+        printf("I am Child process %d\nMy father is %d\n", getpid(), getppid()); 
+
+        // 挂起子进程，等待信号唤醒
+        pause(); 
+
+        // 子进程被唤醒后继续执行
+        printf("%d child will Running: ", getpid()); 
+
+        // 根据命令行参数决定执行命令
+        if (argv[1] != NULL) { 
+            // 打印用户输入的命令参数
+            for (i = 1; argv[i] != NULL; i++) 
+                printf("%s ", argv[i]); 
+            printf("\n"); 
+
+            // 执行用户指定的命令（如 `/bin/ls -l`）
+            status = execve(argv[1], &argv[1], NULL); 
+        } else { 
+            // 执行默认命令 `/bin/ls -a`
+            for (i = 0; args[i] != NULL; i++) 
+                printf("%s ", args[i]); 
+            printf("\n"); 
+            status = execve(args[0], args, NULL); 
+        } 
+    } 
+    // 父进程逻辑
+    else { 
+        printf("\nI am Parent process %d\n", getpid()); 
+
+        // 如果命令行有参数，等待子进程结束
+        if (argv[1] != NULL) { 
+            waitpid(pid, &status, 0);  // 阻塞等待子进程退出
+            printf("\nMy child exit! status = %d\n\n", status); 
+        } 
+        // 如果无参数，唤醒子进程后直接退出（不等待）
+        else { 
+            sleep(3);  // 模拟耗时操作（不可靠的同步方式）
+            if (kill(pid, SIGINT) >= 0)  // 发送 SIGINT 唤醒子进程
+                printf("%d Wakeup %d child.\n", getpid(), pid); 
+            printf("%d don't Wait for child done.\n\n", getpid()); 
+        } 
+    } 
+    return EXIT_SUCCESS; 
+}
+```
+
+
+
+**Makefile**
+
+```makefile
+# 定义变量
+head = pctl.h
+srcs = pctl.c
+objs = pctl.o
+opts = -g -c
+
+# 默认目标：编译生成可执行文件 pctl
+all: pctl
+
+# 生成可执行文件 pctl，依赖目标文件 pctl.o
+pctl: $(objs)
+    gcc $(objs) -o pctl
+
+# 生成目标文件 pctl.o，依赖源文件 pctl.c 和头文件 pctl.h
+pctl.o: $(srcs) $(head)
+    gcc $(opts) $(srcs)
+
+# 清理编译生成的文件
+clean:
+    rm pctl *.o
+```
+
+
+
+#### **关键代码解析**
+
+**`argv` **
+
+`argv` 是 C 语言中 `main` 函数的参数之一，表示**命令行参数**（Command-Line Arguments）：
+
+- **定义**：`char *argv[]` 是一个字符串数组，存储用户在运行程序时输入的参数。
+- 索引规则
+  - `argv[0]`：程序自身的名称（如 `./pctl`）。
+  - `argv[1]`、`argv[2]`...：用户输入的参数。
+  - `argv[argc]`：固定为 `NULL`，表示参数结束。
+
+**示例**：
+
+当用户执行以下命令：
+
+```bash
+$ ./pctl /bin/ls -l
+```
+
+程序中的 `argv` 数组内容为：
+
+```cpp
+argv[0] = "./pctl"   // 程序名
+argv[1] = "/bin/ls"  // 用户输入的第一个参数
+argv[2] = "-l"       // 用户输入的第二个参数
+argv[3] = NULL       // 参数结束标志
+```
+
+ 
+
+ **`execve` 参数分析**
+
+在示例代码中，`execve` 的用法有两种场景：
+
+**场景 1：用户输入子进程命令**
+
+```c
+status = execve(argv[1], &argv[1], NULL);
+```
+
+如果用户输入 `./pctl /bin/ls -l`，则：
+
+- `argv[1] = "/bin/ls"`（命令路径）
+- `&argv[1]` 指向 `{"/bin/ls", "-l", NULL}`（参数数组）
+
+此时，`execve` 执行的命令为：
+
+```
+/bin/ls -l
+```
+
+- **关键点**：`argv` 数组的**第一个元素必须是程序自身路径**（`/bin/ls`），后续元素才是参数（`-l`）。
 
 ------
 
-### 三、示例实验解析
+**场景 2：默认执行命令**
 
-#### 1. 实验程序结构
+```c
+status = execve(args[0], args, NULL);
+```
 
-- 
+其中 `args` 的定义为：
 
-  `pctrl.c`
+```c
+char *args[] = {"/bin/ls", "-a", NULL}; // 默认命令
+```
 
-  ```c
-  int main(int argc, char *argv[]) {  
-      signal(SIGINT, sigcat);  // 注册信号处理函数  
-      pid = fork();  
-      if (pid == 0) {  
-          // 子进程：暂停并等待信号  
-          printf("Child PID: %d\n", getpid());  
-          pause();  
-          // 根据参数执行新程序（如 /bin/ls -a）  
-          execve(args[0], args, NULL);  
-      } else {  
-          // 父进程：唤醒子进程或等待其结束  
-          sleep(3);  
-          kill(pid, SIGINT);  
-      }  
-      return 0;  
-  }  
+- `pathname = args[0] = "/bin/ls"`（程序路径）
+- `argv[] = args`：参数数组为 `{"/bin/ls", "-a", NULL}`
+
+此时，`execve` 执行的命令为：
+
+```
+/bin/ls -a
+```
+
+
+
+- 看似“重复” `/bin/ls`，但这是 Unix 的约定：
+
+  参数数组的**第一个元素**必须是**被执行程序的路径**（即使不传递参数也要保留）。
+
+  即当我输入`/bin/ls -l`，第一个参数（即路径`"/bin/ls"`）也是被当做参数列表第0位传入的，`argv[1]`才是`"-l"`
+
+
+
+#### **实验现象与原理**
+
+**1. 不带参数执行（默认行为）**
+
+```bash
+$ ./pctl
+```
+• **输出**：
   ```
-
-- **`pctrl.h`** 头文件：定义信号处理函数 `sigcat`，打印进程继续执行的提示。
-
-#### 2. 实验现象分析
-
-- **场景1：不带参数执行 `./pctl`**
-  - 父进程创建子进程后，通过 `kill(pid, SIGINT)` 唤醒子进程。
-  - 子进程执行默认命令 `ls -a`，父进程不等待子进程结束，**子进程成为孤儿进程**，由 init 进程回收资源。
-- **场景2：带参数执行 `./pctl /bin/ls -l`**
-  - 父进程通过 `waitpid()` 等待子进程结束。
-  - 子进程被唤醒后执行 `ls -l`，父进程在子进程结束后打印退出状态（`status = 0`）。
-
-#### 3. 关键问题验证
-
-- 
-
-  进程状态查看
-
-  ：
-
-  bash
-
-  Copy
-
-  ```bash
-  $ ps -l  
-  # 输出显示父子进程均为 "T"（暂停状态），验证了 pause() 和信号唤醒机制。  
+  I am Parent process 4112 
+  I am Child process 4113 
+  My father is 4112 
+  4112 Wakeup 4113 child.
+  4112 don't Wait for child done.
+  4113 Process continue 
+  4113 child will Running: /bin/ls -a 
+  . .. Makefile pctl pctl.c pctl.h pctl.o 
   ```
+• **原理**：
+  1. 父进程创建子进程后，休眠 3 秒，发送 `SIGINT` 唤醒子进程。
+  2. 父进程直接退出，子进程成为**孤儿进程**，由 `init` 进程接管。
+  3. 子进程执行默认命令 `/bin/ls -a` 后退出。
 
-- 
+**2. 带参数执行（同步等待）**
 
-  信号处理流程
+```bash
+$ ./pctl /bin/ls -l
+```
+• **输出**：
+  ```
+  I am Child process 4223 
+  My father is 4222 
+  I am Parent process 4222 
+  4222 Waiting for child done.
+  ^C4222 Process continue 
+  4223 Process continue 
+  4223 child will Running: /bin/ls -l 
+  total 1708 
+  -rw-r--r-- 1 root root 176 May 8 11:11 Makefile 
+  -rwxr-xr-x 1 root root 8095 May 8 14:08 pctl 
+  ...
+  My child exit! status = 0 
+  ```
+• **原理**：
+  1. 父进程创建子进程后，调用 `waitpid` 阻塞等待子进程退出。
+  2. 用户按下 `Ctrl+C`，父子进程同时收到 `SIGINT`，唤醒子进程。
+  3. 子进程执行 `/bin/ls -l` 后退出，父进程回收其状态。
 
-  ：
+**3. 进程状态与操作**
 
-  - 子进程调用 `pause()` 后挂起，等待信号。
-  - 父进程发送 `SIGINT`，触发子进程的 `sigcat` 函数，打印提示并继续执行。
+• **`Ctrl+Z`** 发送 `SIGTSTP`，暂停进程并放入后台。
+• **`ps -l`** 显示进程状态 `T`（暂停）。
+• **`fg`** 将进程恢复到前台，继续执行。
+
+
 
 ------
 
@@ -299,10 +534,6 @@
    - 在信号处理函数中调用 `execve("/bin/ls", {"ls", "-a", NULL}, NULL)`。
 
 #### 代码片段示例
-
-c
-
-Copy
 
 ```c
 // 子进程信号处理函数  
