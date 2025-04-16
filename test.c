@@ -1,15 +1,7 @@
 #include <stdio.h>
-#include <unistd.h>
-#include <signal.h>
-
-void handler(int sig) {
-    printf("Caught signal %d\n", sig);
-}
-
-int main() {
-    signal(SIGINT, handler); 
-    printf("Pausing... (Press Ctrl+C to interrupt)\n");
-    pause();
-    printf("pause() returned (errno = EINTR)\n");
+int main(int argc, char *argv[]) {
+    for(int i = 0; i < argc; i++) {
+        printf("%s\n",argv[i]);
+    }
     return 0;
 }
