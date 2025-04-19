@@ -514,6 +514,8 @@ $ ./pctl /bin/ls -l
 
 ---
 
+
+
 ## **实验二：进程通信**
 
 ---
@@ -760,4 +762,220 @@ int main() {
   当父进程的 `x=9` 时，写入 `pipe1`，子进程处理后返回 `x=10`，父进程读取后终止。
 
 
+
+---
+
+
+
+------
+
+## **实验三：进程调度算法**
+
+------
+
+### **核心概念与系统调用**
+
+------
+
+#### **1. 调度策略**
+
+Linux 系统提供三种调度策略：
+
+|     **策略**      | **值** |                           **特点**                           |
+| :---------------: | :----: | :----------------------------------------------------------: |
+| **`SCHED_OTHER`** |   0    | 默认分时调度策略，采用动态优先级（基于时间片和 `nice` 值）。 |
+| **`SCHED_FIFO`**  |   1    | 先进先出实时调度策略，高优先级进程独占 CPU 直到主动释放；同级进程按队列顺序执行。 |
+|  **`SCHED_RR`**   |   2    | 时间片轮转实时调度策略，同级进程轮流执行，时间片耗尽后重新排队。 |
+
+------
+
+#### **2. 优先级管理**
+
+- Linux 调度器将进程分为两个优先级层级：
+
+  - **实时进程（Real-Time）**：使用 `SCHED_FIFO` 或 `SCHED_RR`，优先级范围为 **1~99**（数值越大优先级越高）。
+  - **普通进程（Normal）**：使用 `SCHED_OTHER`，优先级是0， `nice` 值决定相对占用时间长短（范围通常为 -20~19，数值越小优先级越高，但层级低于实时进程）。
+
+  **调度顺序总原则**：
+
+  **​实时进程（FIFO/RR）​**​ 总是优先于 ​**​普通进程（OTHER）​**​。
+
+  |               **场景**               |                        **调度行为**                        |
+  | :----------------------------------: | :--------------------------------------------------------: |
+  |        同优先级 `SCHED_FIFO`         | 严格 FIFO，先到者独占 CPU 直到主动退出或被更高优先级抢占。 |
+  |         同优先级 `SCHED_RR`          |        时间片轮转，每个进程运行固定时间后让出 CPU。        |
+  | 同优先级混合 `SCHED_FIFO`+`SCHED_RR` | `SCHED_FIFO` 优先运行，仅当其不运行时 `SCHED_RR` 才轮转。  |
+
+------
+
+#### **3. 关键系统调用**
+
+- **设置调度策略**：
+
+  ```c
+  #include <sched.h>
+  int sched_setscheduler(pid_t pid, int policy, const struct sched_param *sp);
+  ```
+
+  - 参数：
+
+    - `pid`：目标进程 PID（`0` 表示当前进程）。
+
+    - `policy`：调度策略（`SCHED_OTHER`、`SCHED_FIFO`、`SCHED_RR`）。
+
+    - `sp`：指向 `sched_param` 结构体的指针，包含静态优先级。
+
+      - ```c
+        struct sched_param {
+            int sched_priority;  // 进程的调度优先级（仅对实时策略有效）,值越大优先级越高
+        };
+        ```
+
+  - **权限**：设置实时策略（`SCHED_FIFO`/`SCHED_RR`）需要 `CAP_SYS_NICE` 能力（通常需 root 权限）。
+
+- **设置动态优先级**：
+
+  ```c
+  #include <sys/resource.h>
+  int setpriority(int which, int who, int prio);
+  ```
+
+  - 设置的是nice值，对`SCHED_OTHER`起作用。
+  - 参数：
+    - `which`：作用对象（`PRIO_PROCESS` 进程、`PRIO_PGRP` 进程组、`PRIO_USER` 用户）。
+    - `who`：目标进程 PID、进程组 ID 或用户 UID。
+    - `prio`：动态优先级值（`-20` 到 `19`）。
+
+- **获取调度策略**：
+
+  ```c
+  int sched_getscheduler(pid_t pid);
+  ```
+
+  - 返回值：当前进程的调度策略（`0`、`1` 或 `2`）。
+
+
+
+------
+
+### **示例实验解析**
+
+------
+
+#### **1. 实验目标**
+
+父进程创建 3 个子进程，为每个子进程设置不同的调度策略和优先级，观察其执行顺序：
+
+- **策略与优先级来源**：通过命令行参数指定（优先级参数 1-3，策略参数 4-6）。
+- **默认行为**：未指定参数时，优先级为 `10`，策略为 `SCHED_OTHER`。
+
+------
+
+#### **2. 代码结构分析**
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <sched.h>
+#include <sys/time.h>
+#include <sys/resource.h>
+
+int main(int argc, char *argv[]) {
+    int pid[3];                   // 子进程 PID 数组
+    struct sched_param p[3];      // 调度参数结构体数组
+
+    for (int i = 0; i < 3; i++) {
+        if ((pid[i] = fork()) > 0) {  // 父进程逻辑
+            // 设置子进程静态优先级（从命令行参数或默认值 10）
+            p[i].sched_priority = (argv[i+1] != NULL) ? atoi(argv[i+1]) : 10;
+            // 设置调度策略（从命令行参数或默认 SCHED_OTHER）
+            sched_setscheduler(pid[i], (argv[i+4] != NULL) ? atoi(argv[i+4]) : SCHED_OTHER, &p[i]);
+            // 设置动态优先级（同静态优先级）
+            setpriority(PRIO_PROCESS, pid[i], (argv[i+1] != NULL) ? atoi(argv[i+1]) : 10);
+        } else {                      // 子进程逻辑
+            sleep(1);                 // 等待父进程完成设置
+            for (int j = 0; j < 10; j++) {
+                // 报告当前优先级
+                printf("Child PID = %d priority = %d\n", getpid(), getpriority(PRIO_PROCESS, 0));
+                sleep(1);
+            }
+            exit(EXIT_SUCCESS);
+        }
+    }
+
+    // 父进程报告子进程策略
+    printf("My child %d policy is %d\n", pid[0], sched_getscheduler(pid[0]));
+    printf("My child %d policy is %d\n", pid[1], sched_getscheduler(pid[1]));
+    printf("My child %d policy is %d\n", pid[2], sched_getscheduler(pid[2]));
+    return EXIT_SUCCESS;
+}
+```
+
+------
+
+#### **3. 关键代码逻辑**
+
+|    **步骤**    |                        **父进程操作**                        |                **子进程操作**                |
+| :------------: | :----------------------------------------------------------: | :------------------------------------------: |
+| **创建子进程** |             循环调用 `fork()` 创建 3 个子进程。              |              进入子进程代码块。              |
+| **设置优先级** | 根据命令行参数设置静态优先级（`p[i].sched_priority`）和动态优先级（`setpriority`）。 |                   无操作。                   |
+|  **设置策略**  |     根据命令行参数设置调度策略（`sched_setscheduler`）。     |                   无操作。                   |
+| **子进程执行** |                           无操作。                           | 每隔 1 秒报告 PID 和动态优先级，持续 10 秒。 |
+| **父进程报告** |                   打印各子进程的调度策略。                   |                   无操作。                   |
+
+------
+
+### **运行结果与原理分析**
+
+------
+
+#### **1. 实验一：同策略不同优先级**
+
+**命令**：
+
+```bash
+$ ./psched 10 5 -10 0 0 0  # 优先级 10, 5, -10；策略均为 SCHED_OTHER
+```
+
+**输出**：
+
+```
+Child PID = 10773 priority = -10 
+Child PID = 10772 priority = 5 
+Child PID = 10771 priority = 10 
+...
+```
+
+**分析**：
+
+- 在 `SCHED_OTHER` 策略下，动态优先级（`nice` 值）生效，值越小优先级越高。
+- 进程 `10773` 的 `nice=-10`（最高优先级）最先执行，`10772`（`nice=5`）次之，`10771`（`nice=10`）最后。
+
+------
+
+#### **2. 实验二：混合策略**
+
+**命令**：
+
+```bash
+$ ./psched 10 5 18 0 0 1  # 优先级 10, 5, 18；策略为 SCHED_OTHER, SCHED_OTHER, SCHED_FIFO
+```
+
+**输出**：
+
+```
+Child PID = 11308 priority = 18  # SCHED_FIFO 策略
+Child PID = 11307 priority = 5   # SCHED_OTHER 策略
+Child PID = 11306 priority = 10  # SCHED_OTHER 策略
+...
+```
+
+**分析**：
+
+- 进程 `11308` 使用 `SCHED_FIFO`（实时策略），尽管其 `nice=18`（最低动态优先级），但仍优先于 `SCHED_OTHER` 进程。
+- `SCHED_FIFO` 进程独占 CPU 直到主动释放，因此 `11308` 持续排在输出首位。
+
+
+
+---
 
