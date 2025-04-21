@@ -923,59 +923,208 @@ int main(int argc, char *argv[]) {
 | **子进程执行** |                           无操作。                           | 每隔 1 秒报告 PID 和动态优先级，持续 10 秒。 |
 | **父进程报告** |                   打印各子进程的调度策略。                   |                   无操作。                   |
 
-------
-
-### **运行结果与原理分析**
-
-------
-
-#### **1. 实验一：同策略不同优先级**
-
-**命令**：
-
-```bash
-$ ./psched 10 5 -10 0 0 0  # 优先级 10, 5, -10；策略均为 SCHED_OTHER
-```
-
-**输出**：
-
-```
-Child PID = 10773 priority = -10 
-Child PID = 10772 priority = 5 
-Child PID = 10771 priority = 10 
-...
-```
-
-**分析**：
-
-- 在 `SCHED_OTHER` 策略下，动态优先级（`nice` 值）生效，值越小优先级越高。
-- 进程 `10773` 的 `nice=-10`（最高优先级）最先执行，`10772`（`nice=5`）次之，`10771`（`nice=10`）最后。
-
-------
-
-#### **2. 实验二：混合策略**
-
-**命令**：
-
-```bash
-$ ./psched 10 5 18 0 0 1  # 优先级 10, 5, 18；策略为 SCHED_OTHER, SCHED_OTHER, SCHED_FIFO
-```
-
-**输出**：
-
-```
-Child PID = 11308 priority = 18  # SCHED_FIFO 策略
-Child PID = 11307 priority = 5   # SCHED_OTHER 策略
-Child PID = 11306 priority = 10  # SCHED_OTHER 策略
-...
-```
-
-**分析**：
-
-- 进程 `11308` 使用 `SCHED_FIFO`（实时策略），尽管其 `nice=18`（最低动态优先级），但仍优先于 `SCHED_OTHER` 进程。
-- `SCHED_FIFO` 进程独占 CPU 直到主动释放，因此 `11308` 持续排在输出首位。
-
 
 
 ---
 
+## **实验四：进程同步实验**
+
+
+
+### **核心概念与系统调用**
+
+------
+
+#### **1. IPC 机制概述**
+
+Linux 系统提供三种进程间通信（IPC）机制解决并发进程的同步与互斥问题：
+
+|    **机制**    |        **内核对象**         |                        **核心功能**                         | 查询      |
+| :------------: | :-------------------------: | :---------------------------------------------------------: | --------- |
+|  **共享内存**  |  内存段（Memory Segment）   | 允许多个进程直接读写同一块物理内存，速度最快但需手动同步。  | `ipcs -m` |
+| **信号灯数组** | 信号量集合（Semaphore Set） |   通过 P/V 操作实现进程间同步，控制对共享资源的原子访问。   | `ipcs -s` |
+|  **消息队列**  |  消息链表（Message Queue）  | 以异步方式传递结构化数据，支持优先级消息和阻塞/非阻塞读取。 | `ipcs -q` |
+
+
+
+#### **2. 关键系统调用详解**
+
+**共享内存操作**
+
+- **创建共享内存**：
+
+  ```c
+  #include <sys/ipc.h>
+  #include <sys/shm.h>
+  
+  int shmget(key_t key, size_t size, int shmflg);
+  ```
+
+  **参数**
+
+  1. **`key_t key`**
+
+     - **作用**：唯一标识共享内存段的键值。
+
+     - 取值规则：
+
+       - **固定整数值**：例如 `0x1234`，需确保全局唯一性，通常用 `ftok()` 生成。
+       - **`IPC_PRIVATE`**：表示总是创建新段（即使 `key` 重复）。
+
+     - 示例：
+
+       ```c
+       key_t key = ftok("/tmp", 'A');  // 通过路径和字符生成唯一键值
+       ```
+
+  2. **`size_t size`**
+
+     - **作用**：指定共享内存段的大小（字节）。
+
+     - 规则：
+
+       - 若创建新段，`size` 必须是系统页大小的整数倍（通常为 4096 字节）。
+       - 若获取已有段，`size` 会被忽略（可设为 `0`）。
+
+     - 示例：
+
+       ```c
+       int shmid = shmget(key, 4096, IPC_CREAT | 0666);  // 创建 4KB 的共享内存
+       ```
+
+  3. **`int shmflg`**
+
+     - **作用**：控制共享内存的创建和权限。
+
+     - 标志位组成：
+
+       - 创建标志（高 16 位）：
+         - `IPC_CREAT`：不存在时创建新段；存在时直接返回已有段。
+         - `IPC_EXCL`：与 `IPC_CREAT` 联用，若段已存在则报错（返回 `-1`，`errno=EEXIST`）。
+       - **权限标志**（低 9 位）：设置段的读写权限（格式同文件权限），如 `0666`（所有用户可读写）。
+
+     - 示例：
+
+       ```c
+       int shmflg = IPC_CREAT | IPC_EXCL | 0666;  // 强制创建新段，失败则报错
+       ```
+
+  **返回值**
+
+  - **成功**：返回共享内存段的标识符（`shmid`），用于后续操作（如 `shmat`、`shmdt`）。
+
+    - 当 `key` 不存在且 `shmflg` 包含 `IPC_CREAT` 时，系统会分配一块大小为 `size` 的物理内存。
+    - 当 `key` 存在时，直接返回其标识符 `shmid`（忽略 `size`）。
+
+  - **失败**：返回`-1`，并设置`errno`表示错误原因：
+
+    | **错误码** |                    **描述**                    |
+    | :--------: | :--------------------------------------------: |
+    |  `EEXIST`  |   `key` 已存在，且 `shmflg` 包含 `IPC_CREAT    |
+    |  `ENOENT`  |      `key` 不存在，且未设置 `IPC_CREAT`。      |
+    |  `EINVAL`  |  `size` 超过系统限制，或 `shmflg` 标志无效。   |
+    |  `EPERM`   | 权限不足（如非 root 用户尝试访问系统保留段）。 |
+    |  `ENOMEM`  |            内存不足，无法创建新段。            |
+
+  
+
+- **附加共享内存**：
+
+  ```c
+  void *shmat(int shmid, const void *shmaddr, int shmflg);
+  ```
+
+  - **功能**：将共享内存映射到进程地址空间。
+  - 参数：
+    - `shmid`：由 `shmget` 返回的标识符。
+    - `shmaddr`：映射地址（通常为 `NULL`，由内核自动分配）。
+    - `shmflg`：访问模式（如 `SHM_RDONLY`）。
+  - **返回值**：映射后的内存起始地址。
+
+- **分离共享内存**：
+
+  ```c
+  int shmdt(const void *shmaddr);
+  ```
+
+  - **功能**：解除进程与共享内存的映射关系。
+  - **参数**：`shmaddr` 由 `shmat` 返回的地址。
+
+**信号量操作**
+
+- **创建信号量集**：
+
+  ```c
+  int semget(key_t key, int nsems, int semflg);
+  ```
+
+  - **功能**：创建或获取一个信号量集合。
+  - 参数：
+    - `key`：唯一标识符。
+    - `nsems`：信号量数量。
+    - `semflg`：权限标志和创建选项（同 `shmget`）。
+  - **返回值**：信号量集合标识符（`semid`）。
+
+- **信号量操作**：
+
+  ```c
+  int semop(int semid, struct sembuf *sops, unsigned nsops);
+  ```
+
+  - **功能**：原子性地执行一组信号量操作（如 P/V 操作）。
+
+  - 参数：
+
+    - `semid`：信号量集合标识符。
+    - `sops`：指向操作结构体数组的指针。
+    - `nsops`：操作数量。
+
+  - 操作结构体：
+
+    ```c
+    struct sembuf {
+        unsigned short sem_num;  // 信号量索引
+        short sem_op;            // 操作值（-1 为 P 操作，+1 为 V 操作）
+        short sem_flg;           // 标志（如 `SEM_UNDO` 防止死锁）
+    };
+    ```
+
+**消息队列操作**
+
+- **创建消息队列**：
+
+  ```c
+  int msgget(key_t key, int msgflg);
+  ```
+
+  - **参数**：同 `shmget` 和 `semget`。
+  - **返回值**：消息队列标识符（`msqid`）。
+
+- **发送消息**：
+
+  ```c
+  int msgsnd(int msqid, const void *msgp, size_t msgsz, int msgflg);
+  ```
+
+  - 参数：
+
+    - `msgp`：指向消息缓冲区的指针，结构为
+
+      ```c
+      struct msgbuf {
+          long mtype;     // 消息类型（必须 >0）
+          char mtext[N]; // 消息数据
+      };
+      ```
+
+- **接收消息**：
+
+  ```c
+  ssize_t msgrcv(int msqid, void *msgp, size_t msgsz, long msgtyp, int msgflg);
+  ```
+
+  - 参数：
+    - `msgtyp`：指定接收的消息类型
+      - `=0`：接收队列中第一条消息。
+      - `>0`：接收类型等于 `msgtyp` 的第一条消息。
+      - `<0`：接收类型小于等于 `|msgtyp|` 的最小消息。
