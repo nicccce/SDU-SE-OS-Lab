@@ -39,7 +39,6 @@ x86/
 CMakeCache.txt
 CMakeFiles/
 cmake_install.cmake
-Makefile
 *.cmake
 
 # 依赖目录（如 Conan、vcpkg）
